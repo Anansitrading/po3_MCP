@@ -10,6 +10,7 @@ focusing on compatibility with Claude models on Windsurf.
 import logging
 import os
 import sys
+import re
 from pathlib import Path
 
 # Configure logging first
@@ -32,7 +33,7 @@ load_dotenv(dotenv_path=env_path)
 
 import asyncio
 import json
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 # Updated imports based on actual fastmcp 2.2.1 module structure
 from fastmcp import FastMCP
 # Correct import path for TextContent
@@ -54,6 +55,39 @@ class EnhancedJSONEncoder(json.JSONEncoder):
             return super().default(obj)
         except TypeError:
             return str(obj)
+
+def parse_model_flag(message: str) -> Tuple[str, str]:
+    """
+    Parse the message to extract model flag and clean the message.
+    
+    Args:
+        message: The input message that may contain a model flag
+        
+    Returns:
+        A tuple containing (cleaned_message, model_name)
+        If no model flag is found, model_name will be "o3" (default)
+    """
+    # Default model
+    model_name = "o3"
+    
+    # Pattern to match --ModelName at word boundaries
+    # (?<!\S) ensures we only match flags at the start of a string or after whitespace
+    # [a-zA-Z0-9.-]+ matches letters, numbers, dots, and hyphens in the flag name
+    # (?=\s|$) ensures the flag ends at whitespace or the end of the string
+    pattern = r'(?<!\S)--([\w.-]+)(?=\s|$)'
+    
+    # Search for the pattern
+    match = re.search(pattern, message)
+    if match:
+        # Extract the model name (already without the -- prefix due to capture group)
+        model_name = match.group(1)
+        # Remove the flag from the message and normalize whitespace
+        message = re.sub(r'(?<!\S)--[\w.-]+\s*', ' ', message).strip()
+        # Replace multiple spaces with a single space
+        message = re.sub(r'\s+', ' ', message)
+        print(f"Poe MCP Server Script: Detected model flag, using model: {model_name}", flush=True)
+    
+    return message, model_name
 
 # Create the MCP server with stdio transport (now handled automatically)
 server = FastMCP(
@@ -78,15 +112,18 @@ async def o3_query(message: str) -> List[TextContent]:
         return [TextContent(type="text", text=error_msg)]
     
     try:
+        # Parse the message to extract model flag
+        cleaned_message, model_name = parse_model_flag(message)
+        
         # Use the local PoeClient instead of fp.Client
         client = PoeClient(api_key=api_key)
         print("Poe MCP Server Script: Created Poe client", flush=True)
         
-        print("Poe MCP Server Script: Sending request to Poe o3 model", flush=True)
+        print(f"Poe MCP Server Script: Sending request to Poe model: {model_name}", flush=True)
         # Use the async method from PoeClient
         full_response_str = await client.send_message(
-            content=message,
-            bot_name="o3"
+            content=cleaned_message,
+            bot_name=model_name
         )
         
         # Ensure the result is definitely a string before creating TextContent
@@ -94,7 +131,7 @@ async def o3_query(message: str) -> List[TextContent]:
             raise TypeError(f"PoeClient.send_message returned unexpected type: {type(full_response_str)}")
             
     except Exception as e:
-        error_msg = f"Error querying Poe o3 model: {str(e)}"
+        error_msg = f"Error querying Poe model: {str(e)}"
         print(f"Poe MCP Server Script: {error_msg}", flush=True)
         return [TextContent(type="text", text=error_msg)]
     
